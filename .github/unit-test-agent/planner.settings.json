@@ -22,5 +22,8 @@
       "Edit(.github/**)",
       "Edit(.claude/**)"
     ]
+  },
+  "sandbox": {
+    "autoAllowBashIfSandboxed": false
   }
 }

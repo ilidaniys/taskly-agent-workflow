@@ -25,5 +25,8 @@
       "Edit(.claude/**)",
       "Edit(frontend/src/test/setup.ts)"
     ]
+  },
+  "sandbox": {
+    "autoAllowBashIfSandboxed": false
   }
 }
