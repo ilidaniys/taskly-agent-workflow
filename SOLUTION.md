@@ -118,6 +118,7 @@ asks you to open the PR by hand).
 | `pull_request`, never `pull_request_target`; forks skipped | Fork PRs get no secrets. Running fork code with secrets is the classic way to leak them |
 | Allow-listed tools in `dontAsk` mode, separate settings per agent | Planner: read tools and one script. Writer: edits limited to test paths and two scripts. No web access, no MCP servers, no subagents |
 | Credential scrubbed from subprocesses | Tests are code the writer produced from untrusted input. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` keeps the LLM key out of their environment. It also forces Claude Code's bubblewrap sandbox on Linux, hence the extra packages in the job. The sandbox write-denies `package.json` in the working directory (and `Edit(...)` deny rules become write-denials too); on Linux a denial on a file that does not exist is enforced with a 0-byte placeholder. An empty `package.json` at the monorepo root breaks Vite and Vitest in both packages, so the root carries a real `package.json` (`private: true`) and deny rules only name paths that exist |
+| `autoAllowBashIfSandboxed: false` | With the sandbox on, Claude Code approves sandboxed shell commands without consulting allow rules by default. That would make the two-command allow list decorative. Turning it off puts sandboxed commands back through the regular permission flow, where `dontAsk` denies everything not allow-listed |
 | PR title and description are not given to the agents | They add injection surface and no information the diff lacks |
 | Coverage measured before planning | `coverage-snapshot.mjs` runs both suites in a step without secrets and records per-file percentages and uncovered line ranges. The planner aims cases at uncovered diff lines, and backfill plans `update` for tested-but-thin units (lines < 80 % or branches < 70 %) instead of only files with no test |
 | Pipeline scripts have their own tests | The guard, the verdict and the change analysis are what stands between the model and the repository; `node:test` suites exercise twelve hostile patches and every regression the verdict must catch, in CI on every push |
@@ -137,12 +138,66 @@ asks you to open the PR by hand).
 | Cost in the PR comment | Every run prints model, turns, duration and dollars per stage, so drift is visible where reviewers look |
 
 Known inefficiency: a push to an open PR re-plans the whole diff against the
-merge-base, not only the new commit. See "For production".
+merge-base, not only the new commit. See "For production". Measured figures
+are in "Example run".
 
 ## Example run
 
-> To be replaced before submission with the demo pull requests on GitHub (a
-> backfill run and a feature PR) and the real PR comment.
+Both runs below are on GitHub, with the bot's comment as the record. Numbers
+are from the independent verify job, not from the agents.
+
+### Pull request with a feature — [PR #3](https://github.com/ilidaniys/taskly-agent-workflow/pull/3)
+
+The PR adds `?priority=` / `?completed=` filtering to `GET /api/todos`
+(validator, router, repository) and an **Overdue** option to the frontend
+status filter — seven source files, no tests. `validators.ts` carries a 100 %
+per-file coverage threshold, so the PR's own CI is red until the new schema is
+covered.
+
+| Step | Outcome |
+|---|---|
+| Gate | 5 testable units; `types.ts` (both packages) excluded as types only |
+| Planner (`claude-sonnet-5-5`, 18 turns, 35 s, $0.18) | `update` for all five: validators (6 cases), router (6: filter forwarding, 422 on invalid values, no call to the repository), repository (6: `where` built per filter, omitted when empty, `completed=false` kept), `utils/todos.ts` (6, overdue / completed / no due date / future), `TodoFilters.tsx` (3) |
+| Writer (`claude-haiku-5-5`, 36 turns, 82 s, $0.02) | 5 test files updated, 39 tests added; one backend type error fixed on the second attempt; Prettier applied; both suites, both type checks and both coverage runs green inside the agent job |
+| Guard | 5 modified test files, no violations |
+| Verification | backend 48 → 73 tests, lines 35.65 → 42.60 %, branches 36.84 → 50.87 %; frontend 18 → 32 tests, lines 47.68 → 52.31 %, branches 43.88 → 55.39 %; type checks pass; `validators.ts` back at 100 % |
+| Result | `verified`; tests committed to the PR branch as `38ffe84`; one sticky comment with plan, report and the table above; total $0.20 |
+
+The same PR was run three times while the pipeline was being fixed, which is
+how the sandbox placeholder problem (see Limitations) was found: the first
+two runs committed only the backend tests and the writer's notes said why.
+
+### Backfill — [PR #6](https://github.com/ilidaniys/taskly-agent-workflow/pull/6)
+
+`Backfill unit tests` on `main`, no path filter. The coverage snapshot found
+15 units without a test file and 11 with a test file but below the
+thresholds.
+
+| Step | Outcome |
+|---|---|
+| Planner (`claude-sonnet-5-5`, 42 turns, 88 s, $0.43) | 33 units analysed: 14 `create`, 10 `update` aimed at the measured uncovered lines (for example `router.ts`: "id param validation, get, patch and delete incl. 404 paths are unasserted (16 percent branches)"), 9 `skip` ("Covered (100 percent)", `main.ts` as entry point) |
+| Writer (`claude-haiku-5-5`, 99 turns, 380 s, $0.36) | 24 test files (14 created, 10 updated), 156 tests; 3 type errors fixed on re-run; cases already asserted by existing tests deliberately not duplicated; branches left uncovered listed with reasons |
+| Verification | backend 48 → 96 tests, lines 33.02 → **97.24 %**, branches 33.33 → 97.91 %; frontend 18 → 125 tests, lines 47.68 → **100 %**, branches 43.79 → 97.08 %; type checks pass |
+| Result | `verified`; branch pushed and PR #6 opened by the workflow with the report as its body; total $0.80 |
+
+The writer's process notes in that report also exposed a permission gap:
+it had read files with `ls`/`cat` in the shell although only two commands are
+allow-listed. With the sandbox on, Claude Code's `autoAllowBashIfSandboxed`
+defaults to `true` and approves sandboxed commands without consulting allow
+rules. It is now set to `false` in both settings files, so the allow list
+applies again; the guard and the verify job were never affected.
+
+### Measured cost
+
+| Run | Planner | Writer | Total |
+|---|---|---|---|
+| PR with 5 changed units (PR #3) | $0.13 – $0.18 | $0.02 | $0.15 – $0.20 |
+| Backfill of a whole small monorepo (PR #6) | $0.43 | $0.36 | $0.80 |
+| PR with no testable change (PR #1, #4, #5) | — | — | $0 |
+
+The writer, which does most of the turns, costs a tenth of the planner on
+the PR runs. The dollar figures are Claude Code's estimate of API-equivalent
+cost; the runs used a subscription token.
 
 ## Assumptions
 
@@ -180,6 +235,10 @@ merge-base, not only the new commit. See "For production".
 - The planner sees one PR at a time and regenerates from scratch on each
   push; it does not remember earlier decisions or reviewer feedback.
 - Model output varies between runs.
+- The agent job checks out the pull request's head, so the agents, skills,
+  scripts and the root `package.json` come from the PR's tree. A branch
+  created before a pipeline change runs the old pipeline until it is rebased
+  (PR #3 showed this).
 
 ## For production
 
