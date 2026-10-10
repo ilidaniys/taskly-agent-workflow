@@ -41,7 +41,7 @@ else state = 'rejected';
 const HEADLINE = {
   no_units: 'No testable source changes — agent not started.',
   agent_failed: 'The agent run failed. No tests were committed.',
-  committed: `Tests committed in ${code(short(env.COMMIT_SHA))}. The commit is made with the workflow token, so CI does not re-run on it; the verification below ran on exactly that tree.`,
+  committed: `Tests committed in ${code(short(env.COMMIT_SHA))}. GitHub does not start workflows for a commit pushed with the workflow token on its own (depending on repository settings the run is skipped or waits for "Approve and run"); the verification below ran on exactly that tree.`,
   stale: 'Tests were verified but not pushed: the branch moved on during the run. A newer run covers the new head.',
   no_tests_needed: 'The planner decided no test changes are needed.',
   blocked: 'The writer could not produce passing tests. Nothing was committed.',
@@ -108,7 +108,9 @@ if (verify) {
 }
 
 if (plan) {
-  lines.push('### Planner decisions', '', 'Written by the planning agent from the diff alone; not independently checked.', '');
+  lines.push('### Planner decisions', '', backfill
+    ? 'Written by the planning agent from the source, the existing tests and the measured coverage; not independently checked.'
+    : 'Written by the planning agent from the diff alone; not independently checked.', '');
   if (plan.summary) lines.push(`> ${clean(plan.summary, 500)}`, '');
   const rows = list(plan.units);
   if (rows.length) {
@@ -166,7 +168,7 @@ if (injections.length) {
   for (const item of injections) lines.push(`- ${clean(typeof item === 'string' ? item : JSON.stringify(item), 300)}`);
   lines.push('');
 }
-const skills = [...new Set([...(plan ? ['analyze-pr-changes'] : []), ...list(report?.skills_used)])].map((skill) => code(skill)).join(', ');
+const skills = [...new Set([...list(plan?.skills_used), ...list(report?.skills_used)])].map((skill) => code(skill)).join(', ');
 if (skills) lines.push(`Skills used: ${skills}`, '');
 
 if (usage) {

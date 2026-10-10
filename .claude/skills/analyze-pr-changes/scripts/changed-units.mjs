@@ -3,10 +3,13 @@
 // Deterministic: used by the agents (skill) and by the workflow gate job.
 // Usage: changed-units.mjs [--base <sha|ref>] [--all]
 //        changed-units.mjs [--base <sha|ref>] --diff <path>   print the diff of one file against the merge-base
+// When .unit-test-agent/coverage.json exists (written by coverage-snapshot.mjs), each unit also
+// carries its current coverage and uncovered line ranges, and `low_coverage` flags units below
+// the thresholds so that backfill can target tested-but-thin files.
 // The agents have no raw `git` permission; `--diff` is the only way they see history, and it
 // accepts only paths inside the two packages.
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -101,15 +104,31 @@ if (args.includes('--all')) {
   }
 }
 
-const result = { merge_base: mergeBase, units: [], excluded: [], changed_tests: [], other: [] };
+const THRESHOLDS = { lines: 80, branches: 70 };
+const COVERAGE_FILE = '.unit-test-agent/coverage.json';
+let coverage = null;
+if (existsSync(COVERAGE_FILE)) {
+  try { coverage = JSON.parse(readFileSync(COVERAGE_FILE, 'utf8')).files ?? null; } catch { coverage = null; }
+}
+
+const result = { merge_base: mergeBase, thresholds: THRESHOLDS, coverage_available: Boolean(coverage), units: [], excluded: [], changed_tests: [], other: [] };
 for (const { file, status, previous } of entries) {
   const info = classify(file);
   if (info.kind === 'source') {
-    result.units.push({
+    const unit = {
       path: file, package: info.package, status, ...(previous ? { previous } : {}),
       expected_tests: info.expected_tests,
       test_exists: info.expected_tests.some((candidate) => existsSync(candidate)),
-    });
+    };
+    const measured = coverage?.[file];
+    if (measured) {
+      unit.coverage = measured;
+      unit.low_coverage = measured.lines < THRESHOLDS.lines || measured.branches < THRESHOLDS.branches;
+    } else if (coverage && status !== 'deleted') {
+      unit.coverage = null; // not in the report: never imported by any test
+      unit.low_coverage = true;
+    }
+    result.units.push(unit);
   } else if (info.kind === 'excluded') {
     result.excluded.push({ path: file, package: info.package, status, reason: info.reason });
   } else if (info.kind === 'test') {
@@ -126,6 +145,7 @@ const live = result.units.filter((unit) => unit.status !== 'deleted');
 result.summary = {
   testable: result.units.length,
   untested: live.filter((unit) => !unit.test_exists).length,
+  low_coverage: coverage ? live.filter((unit) => unit.test_exists && unit.low_coverage).length : null,
   packages: [...new Set(result.units.map((unit) => unit.package))].sort(),
 };
 console.log(JSON.stringify(result, null, 2));
