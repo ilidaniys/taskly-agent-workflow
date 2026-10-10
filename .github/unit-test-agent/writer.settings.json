@@ -23,11 +23,7 @@
       "Read(**/.env.*)",
       "Edit(.github/**)",
       "Edit(.claude/**)",
-      "Edit(frontend/src/test/setup.ts)",
-      "Edit(**/package.json)",
-      "Edit(**/package-lock.json)",
-      "Edit(**/vitest.config.ts)",
-      "Edit(**/vite.config.ts)"
+      "Edit(frontend/src/test/setup.ts)"
     ]
   }
 }

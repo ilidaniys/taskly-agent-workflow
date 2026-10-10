@@ -35,6 +35,10 @@ done
 
 cd "$(git rev-parse --show-toplevel)/$package"
 
+# Inside the agent's sandbox $GITHUB_STEP_SUMMARY is read-only; Vitest's GitHub reporter
+# would print EROFS on every run. The pipeline's own verify job writes the summary.
+unset GITHUB_ACTIONS GITHUB_STEP_SUMMARY
+
 case "$mode" in
   typecheck) exec npm run --silent typecheck ;;
   format)

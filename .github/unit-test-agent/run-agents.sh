@@ -11,6 +11,7 @@
 #       WRITER_BUDGET_USD    default 2.5
 #       CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY
 set -uo pipefail
+set -f # no glob expansion: BACKFILL_PATHS comes from a workflow input and is validated below
 
 : "${OUT_DIR:?OUT_DIR is required}"
 MODE="${MODE:-pr}"
@@ -34,7 +35,8 @@ if [ "$MODE" = "backfill" ]; then
   planner_prompt="$(cat "$here/backfill.prompt.md")"
   if [ -n "${BACKFILL_PATHS:-}" ]; then
     # workflow_dispatch input: accept only plain repository paths, nothing that reads as text.
-    for p in $BACKFILL_PATHS; do
+    read -ra backfill_paths <<< "$BACKFILL_PATHS"
+    for p in "${backfill_paths[@]}"; do
       [[ "$p" =~ ^(backend|frontend)/[A-Za-z0-9_./-]+$ && "$p" != *..* ]] || { echo "::error::invalid backfill path: $p"; exit 1; }
     done
     planner_prompt="$planner_prompt"$'\n\n'"Restrict the plan to units under these paths: ${BACKFILL_PATHS}"
