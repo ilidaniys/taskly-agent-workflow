@@ -17,6 +17,24 @@ it('lists tasks from the repository', async () => {
   expect(response.status).toBe(200);
   expect(response.body).toEqual([todo]);
   expect(repository.list).toHaveBeenCalledOnce();
+  expect(repository.list).toHaveBeenCalledWith({});
+});
+it('passes a priority filter to the repository', async () => {
+  const { app, repository } = setup();
+  expect((await request(app).get('/api/todos?priority=high')).status).toBe(200);
+  expect(repository.list).toHaveBeenCalledWith({ priority: 'high' });
+});
+it('passes a completed filter as a boolean to the repository', async () => {
+  const { app, repository } = setup();
+  expect((await request(app).get('/api/todos?completed=true')).status).toBe(200);
+  expect(repository.list).toHaveBeenLastCalledWith({ completed: true });
+  expect((await request(app).get('/api/todos?completed=false')).status).toBe(200);
+  expect(repository.list).toHaveBeenLastCalledWith({ completed: false });
+});
+it.each(['?priority=urgent', '?completed=yes'])('rejects invalid list query %s without calling the repository', async (query) => {
+  const { app, repository } = setup();
+  expect((await request(app).get(`/api/todos${query}`)).status).toBe(422);
+  expect(repository.list).not.toHaveBeenCalled();
 });
 it('creates tasks with trimmed input and defaults', async () => {
   const { app, repository } = setup();

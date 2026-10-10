@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createSchema, updateSchema, idSchema, todoSchema } from '../src/features/todos/validators.ts';
+import { createSchema, updateSchema, idSchema, todoSchema, listQuerySchema } from '../src/features/todos/validators.ts';
 import { todo } from './fixture.ts';
 
 describe('todo validation', () => {
@@ -36,5 +36,21 @@ describe('todo validation', () => {
     expect(idSchema.parse('12')).toBe(12);
     expect(todoSchema.parse(todo)).toEqual(todo);
     expect(todoSchema.safeParse({ ...todo, created_at: 'yesterday' }).success).toBe(false);
+  });
+  it('listQuerySchema accepts an empty object and returns {}', () => {
+    expect(listQuerySchema.parse({})).toEqual({});
+  });
+  it("listQuerySchema parses completed 'true' to true and 'false' to false", () => {
+    expect(listQuerySchema.parse({ completed: 'true' })).toEqual({ completed: true });
+    expect(listQuerySchema.parse({ completed: 'false' })).toEqual({ completed: false });
+  });
+  it.each(['low', 'medium', 'high'])('listQuerySchema accepts priority %s', (priority) => {
+    expect(listQuerySchema.parse({ priority })).toEqual({ priority });
+  });
+  it("listQuerySchema rejects priority 'urgent'", () => {
+    expect(listQuerySchema.safeParse({ priority: 'urgent' }).success).toBe(false);
+  });
+  it.each(['1', 'TRUE'])("listQuerySchema rejects completed value %s other than 'true' or 'false'", (completed) => {
+    expect(listQuerySchema.safeParse({ completed }).success).toBe(false);
   });
 });
