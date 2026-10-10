@@ -1,0 +1,5 @@
+{
+  "name": "taskly-app-node",
+  "private": true,
+  "description": "Monorepo root. Exists so that the unit-test agent's sandbox has a real file to protect: Claude Code's Linux sandbox write-denies package.json in the working directory and would otherwise plant a 0-byte placeholder here, which breaks Vite and Vitest in both packages."
+}
