@@ -38,7 +38,7 @@ git-ignored; create it with the Write tool). Valid JSON, no comments.
 | Field | Rule |
 |---|---|
 | `decision` | `tests_written` — at least one test file created or changed and verified. `no_tests_needed` — nothing to do, with reasons per unit. `blocked` — you could not produce passing tests; nothing half-done is left in the tree |
-| `units` | One entry per unit from the analysis, including skipped ones. `action` is `create`, `update` or `skip`. `test_file` and `tests_added` only for `create`/`update` |
+| `units` | One entry per unit in `.unit-test-agent/plan.json`, including skipped ones; copy `path`, `action` and `reason` from the plan. `test_file` and `tests_added` only for `create`/`update`. If you dropped a planned case, say which one in `notes` |
 | `reason` | Names the behaviour, not the file. Maximum 200 characters |
 | `test_runs` | Only commands you actually ran in this session, with their real outcome |
 | `skills_used` | Names of the skills you actually followed |

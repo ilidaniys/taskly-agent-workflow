@@ -1,10 +1,13 @@
 name: PR unit-test agent
 
 # Four jobs with separated privileges:
-#   gate    – deterministic: is there anything testable in this diff?     (no secrets, read-only)
-#   agent   – runs the custom agent, emits a patch + report as artifacts  (LLM credential, read-only token)
-#   verify  – guards and re-runs the patch from scratch                   (no secrets, read-only)
-#   publish – commits the verified patch and comments on the PR           (write token, runs no PR code)
+#   gate    – deterministic: is there anything testable in this diff?            (no secrets, read-only)
+#   agent   – planner (sonnet) then writer (haiku); emits patch + plan + report    (LLM credential, read-only token)
+#   verify  – guards and re-runs the patch from scratch                           (no secrets, read-only)
+#   publish – commits the verified patch and comments on the PR                   (write token)
+# verify and publish run the guard scripts from the BASE branch, so a pull request cannot
+# weaken the guard that judges it. The workflow file itself still comes from the PR (GitHub
+# semantics for `pull_request`); CODEOWNERS on .github/ closes that for collaborators.
 # See SOLUTION.md for the reasoning.
 
 on:
@@ -20,7 +23,8 @@ concurrency:
 env:
   NODE_VERSION: '22'
   CLAUDE_CODE_VERSION: '2.1.295'
-  MAX_BUDGET_USD: '3'
+  PLANNER_BUDGET_USD: '1'
+  WRITER_BUDGET_USD: '2.5'
 
 jobs:
   gate:
@@ -91,54 +95,25 @@ jobs:
           npm ci --prefix frontend
       - name: Install sandbox dependencies
         run: |
-          # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB isolates subprocesses with bubblewrap.
+          # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces Claude Code's Linux subprocess sandbox
+          # (bubblewrap) on; it refuses to start without bwrap + socat and user namespaces.
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap socat
           # Ubuntu 24.04 blocks unprivileged user namespaces by default; bubblewrap needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install Claude Code
         run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-      - name: Run unit-test agent
+      - name: Run planner and writer agents
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Strip the credential from every subprocess the agent starts (tests included).
+          # Strip the credential from every subprocess the agents start (tests included).
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           DISABLE_AUTOUPDATER: '1'
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          [ -n "${ANTHROPIC_API_KEY:-}" ] || unset ANTHROPIC_API_KEY
-          [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || unset CLAUDE_CODE_OAUTH_TOKEN
-          if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            echo "::error::Set the ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) repository secret."
-            exit 1
-          fi
-          claude --print "$(cat .github/unit-test-agent/prompt.md)" \
-            --agent unit-test-writer \
-            --settings .github/unit-test-agent/settings.json \
-            --permission-mode dontAsk \
-            --strict-mcp-config \
-            --max-budget-usd "$MAX_BUDGET_USD" \
-            --no-session-persistence \
-            --output-format json < /dev/null > "$RUNNER_TEMP/claude-result.json"
-      - name: Collect patch and report
-        if: always()
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/agent-output"
-          mkdir -p "$out"
-          # .unit-test-agent/ is git-ignored, so the patch holds only real changes.
-          git add --all
-          git diff --cached --binary --no-color > "$out/tests.patch"
-          if [ -f .unit-test-agent/report.json ] && [ "$(stat -c %s .unit-test-agent/report.json)" -le 200000 ]; then
-            cp .unit-test-agent/report.json "$out/report.json"
-          fi
-          if [ -s "$RUNNER_TEMP/claude-result.json" ]; then
-            jq '{turns: .num_turns, duration_ms, cost_usd: .total_cost_usd, is_error}' \
-              "$RUNNER_TEMP/claude-result.json" > "$out/run.json" || true
-          fi
-          git diff --cached --stat
+          MODE: pr
+          OUT_DIR: ${{ runner.temp }}/agent-output
+        run: bash .github/unit-test-agent/run-agents.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -156,6 +131,24 @@ jobs:
     outputs:
       patch_empty: ${{ steps.patch.outputs.empty }}
     steps:
+      # Guard scripts come from the base branch (see header). Checked out first, copied
+      # aside, then the pull request replaces the workspace.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/unit-test-agent
+          persist-credentials: false
+      - name: Keep the base branch's guard scripts
+        id: guard_dir
+        run: |
+          mkdir -p "$RUNNER_TEMP/guard"
+          if [ -f .github/unit-test-agent/apply-patch.mjs ]; then
+            cp .github/unit-test-agent/*.mjs "$RUNNER_TEMP/guard/"
+            echo "dir=$RUNNER_TEMP/guard" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The base branch has no .github/unit-test-agent yet; using the pull request's scripts."
+            echo "dir=$GITHUB_WORKSPACE/.github/unit-test-agent" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -184,18 +177,26 @@ jobs:
           npm ci --prefix frontend
       - name: Baseline (pull request as submitted)
         if: steps.patch.outputs.empty == 'false'
-        run: node .github/unit-test-agent/verify.mjs run before "$RUNNER_TEMP/verify"
+        env:
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
+        run: node "$GUARD/verify.mjs" run before "$RUNNER_TEMP/verify"
       - name: Guard and apply the agent's patch
         id: guard
         if: steps.patch.outputs.empty == 'false'
         continue-on-error: true
-        run: node .github/unit-test-agent/apply-patch.mjs "$RUNNER_TEMP/agent-output/tests.patch" "$RUNNER_TEMP/verify/patch.json"
+        env:
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
+        run: node "$GUARD/apply-patch.mjs" "$RUNNER_TEMP/agent-output/tests.patch" "$RUNNER_TEMP/verify/patch.json"
       - name: Re-run with the agent's tests
         if: steps.patch.outputs.empty == 'false' && steps.guard.outcome == 'success'
-        run: node .github/unit-test-agent/verify.mjs run after "$RUNNER_TEMP/verify"
+        env:
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
+        run: node "$GUARD/verify.mjs" run after "$RUNNER_TEMP/verify"
       - name: Verdict
         if: steps.patch.outputs.empty == 'false'
-        run: node .github/unit-test-agent/verify.mjs verdict "$RUNNER_TEMP/verify"
+        env:
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
+        run: node "$GUARD/verify.mjs" verdict "$RUNNER_TEMP/verify"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.patch.outputs.empty == 'false'
         with:
@@ -213,8 +214,24 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      # This job holds the write token. It installs nothing and executes no code from
-      # the patch: it only re-applies the guard, commits, pushes and comments.
+      # This job holds the write token. It installs nothing and runs no test code; the only
+      # scripts it executes (guard, comment renderer) are taken from the base branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/unit-test-agent
+          persist-credentials: false
+      - name: Keep the base branch's guard scripts
+        id: guard_dir
+        run: |
+          mkdir -p "$RUNNER_TEMP/guard"
+          if [ -f .github/unit-test-agent/apply-patch.mjs ]; then
+            cp .github/unit-test-agent/*.mjs "$RUNNER_TEMP/guard/"
+            echo "dir=$RUNNER_TEMP/guard" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The base branch has no .github/unit-test-agent yet; using the pull request's scripts."
+            echo "dir=$GITHUB_WORKSPACE/.github/unit-test-agent" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -227,9 +244,10 @@ jobs:
         if: needs.verify.result == 'success' && needs.verify.outputs.patch_empty == 'false'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
         run: |
           set -euo pipefail
-          node .github/unit-test-agent/apply-patch.mjs "$RUNNER_TEMP/artifacts/unit-test-agent-output/tests.patch" > /dev/null
+          node "$GUARD/apply-patch.mjs" "$RUNNER_TEMP/artifacts/unit-test-agent-output/tests.patch" > /dev/null
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit --quiet \
@@ -244,6 +262,7 @@ jobs:
       - name: Comment on the pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          GUARD: ${{ steps.guard_dir.outputs.dir }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GATE_TESTABLE: ${{ needs.gate.outputs.testable }}
           AGENT_RESULT: ${{ needs.agent.result }}
@@ -254,7 +273,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          node .github/unit-test-agent/render-comment.mjs "$RUNNER_TEMP/artifacts" > "$RUNNER_TEMP/comment.md"
+          node "$GUARD/render-comment.mjs" "$RUNNER_TEMP/artifacts" > "$RUNNER_TEMP/comment.md"
           cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
           existing="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
             --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- unit-test-agent -->"))) | .id' | tail -n 1)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the pull-request comment from pipeline artifacts. Prints Markdown to stdout.
+// Builds the pull-request comment (or backfill PR body) from pipeline artifacts. Prints Markdown.
 // Agent-written text is untrusted: it is length-limited and neutralised before rendering.
 // Usage: render-comment.mjs <artifacts dir>   (state comes from environment variables)
 import { existsSync, readFileSync } from 'node:fs';
@@ -12,7 +12,9 @@ const readJson = (...parts) => {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; }
 };
 const env = process.env;
+const backfill = env.BACKFILL === '1';
 const units = readJson('unit-test-agent-gate', 'units.json');
+const plan = readJson('unit-test-agent-output', 'plan.json');
 const report = readJson('unit-test-agent-output', 'report.json');
 const usage = readJson('unit-test-agent-output', 'run.json');
 const verify = readJson('unit-test-agent-verify', 'verify.json');
@@ -33,21 +35,35 @@ if (env.GATE_TESTABLE === '0') state = 'no_units';
 else if (env.AGENT_RESULT !== 'success') state = 'agent_failed';
 else if (env.PUSH_OUTCOME === 'pushed') state = 'committed';
 else if (env.PUSH_OUTCOME === 'stale') state = 'stale';
-else if (env.PATCH_EMPTY === 'true') state = report?.decision === 'no_tests_needed' ? 'no_tests_needed' : 'blocked';
+else if (env.PATCH_EMPTY === 'true') state = plan?.decision === 'no_tests_needed' || report?.decision === 'no_tests_needed' ? 'no_tests_needed' : 'blocked';
 else state = 'rejected';
 
 const HEADLINE = {
   no_units: 'No testable source changes — agent not started.',
   agent_failed: 'The agent run failed. No tests were committed.',
-  committed: `Tests committed in ${code(short(env.COMMIT_SHA))}.`,
+  committed: `Tests committed in ${code(short(env.COMMIT_SHA))}. The commit is made with the workflow token, so CI does not re-run on it; the verification below ran on exactly that tree.`,
   stale: 'Tests were verified but not pushed: the branch moved on during the run. A newer run covers the new head.',
-  no_tests_needed: 'The agent decided no test changes are needed.',
-  blocked: 'The agent could not produce passing tests. Nothing was committed.',
+  no_tests_needed: 'The planner decided no test changes are needed.',
+  blocked: 'The writer could not produce passing tests. Nothing was committed.',
   rejected: 'The agent\'s tests were rejected by independent verification. Nothing was committed.',
 };
+if (backfill) {
+  HEADLINE.committed = 'Backfill: the tests in this pull request were written by the agents and passed independent verification.';
+  HEADLINE.no_tests_needed = 'Backfill: the planner found nothing worth testing in the requested scope.';
+}
 
 const lines = ['<!-- unit-test-agent -->', '## Unit-test agent', '', `**${HEADLINE[state]}**`, ''];
-lines.push(`Head ${code(short(env.HEAD_SHA))} · [workflow run](${env.RUN_URL})`, '');
+lines.push(`${backfill ? 'Base' : 'Head'} ${code(short(env.HEAD_SHA))} · [workflow run](${env.RUN_URL})`, '');
+
+if (state === 'agent_failed') {
+  const why = [];
+  for (const stage of ['planner', 'writer']) {
+    const run = usage?.[stage];
+    if (run && !run.skipped && run.is_error) why.push(`${stage}: ${clean(run.result || 'error', 300)}`);
+  }
+  if (why.length) { lines.push('**Reason:**', ''); for (const item of why) lines.push(`- ${item}`); lines.push(''); }
+  else lines.push('See the workflow log; the agents did not report a reason (budget cap, timeout or a crash).', '');
+}
 
 if (state === 'no_units' && units) {
   const skipped = list(units.excluded);
@@ -91,47 +107,82 @@ if (verify) {
   }
 }
 
-if (report) {
-  lines.push('### Agent decisions', '', 'Reported by the agent; not independently checked.', '');
-  if (report.summary) lines.push(`> ${clean(report.summary, 500)}`, '');
-  const rows = list(report.units);
+if (plan) {
+  lines.push('### Planner decisions', '', 'Written by the planning agent from the diff alone; not independently checked.', '');
+  if (plan.summary) lines.push(`> ${clean(plan.summary, 500)}`, '');
+  const rows = list(plan.units);
   if (rows.length) {
-    lines.push('| Unit | Action | Reason | Test file |', '|---|---|---|---|');
+    lines.push('| Unit | Action | Reason | Planned cases |', '|---|---|---|---|');
     for (const unit of rows) {
-      lines.push(`| ${code(unit.path)} | ${clean(unit.action, 10)} | ${clean(unit.reason)} | ${unit.test_file ? code(unit.test_file) : ''} |`);
+      const cases = Array.isArray(unit.cases) ? unit.cases.length : '';
+      lines.push(`| ${code(unit.path)} | ${clean(unit.action, 10)} | ${clean(unit.reason)} | ${cases} |`);
     }
     lines.push('');
   }
-  const bugs = list(report.suspected_bugs);
-  if (bugs.length) {
-    lines.push('### Suspected bugs in source', '', 'The agent left these untested instead of asserting the current behaviour. Please review.', '');
-    for (const bug of bugs) lines.push(`- ${code(bug.path)} — expected: ${clean(bug.expected)}; actual: ${clean(bug.actual)}`);
-    lines.push('');
+  const detailed = rows.filter((unit) => Array.isArray(unit.cases) && unit.cases.length);
+  if (detailed.length) {
+    lines.push('<details><summary>Planned test cases</summary>', '');
+    for (const unit of detailed) {
+      lines.push(`**${code(unit.test_file || unit.path)}** — ${clean(unit.pattern, 160)}`, '');
+      for (const item of list(unit.cases)) lines.push(`- ${clean(item, 200)}`);
+      lines.push('');
+    }
+    lines.push('</details>', '');
   }
-  const injections = list(report.suspected_injection);
-  if (injections.length) {
-    lines.push('### Possible prompt injection', '', 'Content in the diff tried to instruct the agent. Review these files.', '');
-    for (const item of injections) lines.push(`- ${clean(typeof item === 'string' ? item : JSON.stringify(item), 300)}`);
+} else if (state !== 'no_units') {
+  lines.push('The planner left no plan.', '');
+}
+
+if (report) {
+  lines.push('### Writer report', '', 'Reported by the implementing agent; not independently checked.', '');
+  if (report.summary) lines.push(`> ${clean(report.summary, 500)}`, '');
+  const rows = list(report.units).filter((unit) => unit.action === 'create' || unit.action === 'update');
+  if (rows.length) {
+    lines.push('| Unit | Action | Test file | Tests added |', '|---|---|---|---|');
+    for (const unit of rows) {
+      lines.push(`| ${code(unit.path)} | ${clean(unit.action, 10)} | ${unit.test_file ? code(unit.test_file) : ''} | ${Number.isFinite(unit.tests_added) ? unit.tests_added : ''} |`);
+    }
     lines.push('');
   }
   const notes = list(report.notes);
   if (notes.length) {
-    lines.push('<details><summary>Agent notes</summary>', '');
+    lines.push('<details><summary>Writer notes</summary>', '');
     for (const note of notes) lines.push(`- ${clean(note, 300)}`);
     lines.push('', '</details>', '');
   }
-  const skills = list(report.skills_used).map((skill) => code(skill)).join(', ');
-  if (skills) lines.push(`Skills used: ${skills}`, '');
-} else if (state !== 'no_units') {
-  lines.push('The agent left no report.', '');
+} else if (plan && plan.decision !== 'no_tests_needed' && state !== 'agent_failed') {
+  lines.push('The writer left no report.', '');
 }
 
-if (usage) {
-  const parts = [];
-  if (typeof usage.turns === 'number') parts.push(`${usage.turns} turns`);
-  if (typeof usage.duration_ms === 'number') parts.push(`${Math.round(usage.duration_ms / 1000)} s`);
-  if (typeof usage.cost_usd === 'number') parts.push(`$${usage.cost_usd.toFixed(2)}`);
-  if (parts.length) lines.push(`<sub>Agent run: ${parts.join(' · ')}</sub>`, '');
+const bugs = [...list(plan?.suspected_bugs), ...list(report?.suspected_bugs)];
+if (bugs.length) {
+  lines.push('### Suspected bugs in source', '', 'The agents left these untested instead of asserting the current behaviour. Please review.', '');
+  for (const bug of bugs) lines.push(`- ${code(bug.path)} — expected: ${clean(bug.expected)}; actual: ${clean(bug.actual)}`);
+  lines.push('');
 }
-lines.push('<sub>Add the `skip-test-agent` label to opt this pull request out.</sub>');
+const injections = [...list(plan?.suspected_injection), ...list(report?.suspected_injection)];
+if (injections.length) {
+  lines.push('### Possible prompt injection', '', 'Content in the diff tried to instruct an agent. Review these files.', '');
+  for (const item of injections) lines.push(`- ${clean(typeof item === 'string' ? item : JSON.stringify(item), 300)}`);
+  lines.push('');
+}
+const skills = [...new Set([...(plan ? ['analyze-pr-changes'] : []), ...list(report?.skills_used)])].map((skill) => code(skill)).join(', ');
+if (skills) lines.push(`Skills used: ${skills}`, '');
+
+if (usage) {
+  const stage = (name, label) => {
+    const run = usage[name];
+    if (!run || run.skipped) return null;
+    const parts = [];
+    if (Array.isArray(run.models) && run.models.length) parts.push(code(run.models.join(', ')));
+    if (typeof run.turns === 'number') parts.push(`${run.turns} turns`);
+    if (typeof run.duration_ms === 'number') parts.push(`${Math.round(run.duration_ms / 1000)} s`);
+    if (typeof run.cost_usd === 'number') parts.push(`$${run.cost_usd.toFixed(2)}`);
+    return parts.length ? `${label} ${parts.join(' · ')}` : null;
+  };
+  const parts = [stage('planner', 'planner:'), stage('writer', 'writer:')].filter(Boolean);
+  if (typeof usage.total_cost_usd === 'number' && parts.length) parts.push(`total $${usage.total_cost_usd.toFixed(2)}`);
+  if (parts.length) lines.push(`<sub>Agent run — ${parts.join(' · ')}</sub>`, '');
+}
+if (!backfill) lines.push('<sub>Add the `skip-test-agent` label to opt this pull request out.</sub>');
 console.log(lines.join('\n'));

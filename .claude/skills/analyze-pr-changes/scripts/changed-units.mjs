@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Lists changed source units and maps each to the test file that should cover it.
-// Deterministic: used by the agent (skill) and by the workflow gate job.
+// Deterministic: used by the agents (skill) and by the workflow gate job.
 // Usage: changed-units.mjs [--base <sha|ref>] [--all]
+//        changed-units.mjs [--base <sha|ref>] --diff <path>   print the diff of one file against the merge-base
+// The agents have no raw `git` permission; `--diff` is the only way they see history, and it
+// accepts only paths inside the two packages.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -15,6 +18,19 @@ const git = (...parameters) =>
   execFileSync('git', parameters, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
 process.chdir(git('rev-parse', '--show-toplevel').trim());
+
+const DIFFABLE = /^(?:backend|frontend)\/[A-Za-z0-9_./-]+$/;
+if (args.includes('--diff')) {
+  const target = option('--diff');
+  if (!target || !DIFFABLE.test(target) || target.includes('..')) {
+    console.error('--diff needs a path inside backend/ or frontend/');
+    process.exit(2);
+  }
+  const base = option('--base') || process.env.BASE_SHA || 'origin/main';
+  const mergeBase = git('merge-base', base, 'HEAD').trim();
+  process.stdout.write(git('diff', '--no-color', '--no-ext-diff', mergeBase, '--', target));
+  process.exit(0);
+}
 
 const FRONTEND_EXCLUDED = [
   [/^frontend\/src\/design-system\//, 'design system: documented in Storybook, excluded from coverage'],

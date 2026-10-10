@@ -11,14 +11,8 @@
       "Edit(frontend/src/test/**)",
       "Edit(backend/tests/**)",
       "Edit(.unit-test-agent/**)",
-      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs)",
-      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs *)",
-      "Bash(bash .claude/skills/verify-tests/scripts/run-tests.sh *)",
-      "Bash(git diff *)",
-      "Bash(git status)",
-      "Bash(git status *)",
-      "Bash(git log *)",
-      "Bash(git show *)"
+      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs --diff *)",
+      "Bash(bash .claude/skills/verify-tests/scripts/run-tests.sh *)"
     ],
     "deny": [
       "WebFetch",
