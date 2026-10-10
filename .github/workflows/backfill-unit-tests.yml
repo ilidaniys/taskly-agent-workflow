@@ -1,0 +1,182 @@
+name: Backfill unit tests
+
+# Manual run of the same two agents in backfill mode: the planner lists every source unit
+# without a test file, the writer implements the plan, the verify job re-runs everything
+# from scratch, and the result is opened as a pull request for human review. Same privilege
+# separation as the PR workflow; the agent job never holds a write token.
+#
+# Prerequisites: the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`; or ANTHROPIC_API_KEY), and
+# Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+
+on:
+  workflow_dispatch:
+    inputs:
+      paths:
+        description: 'Optional space-separated path prefixes to restrict the backfill (e.g. "backend/src/core frontend/src/lib")'
+        required: false
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: unit-test-backfill
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  CLAUDE_CODE_VERSION: '2.1.295'
+  PLANNER_BUDGET_USD: '2'
+  WRITER_BUDGET_USD: '6'
+
+jobs:
+  agent:
+    name: Agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    # The LLM credential lives in the "prod" Environment (Settings → Environments); only this job gets it.
+    environment: prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+      - name: Install sandbox dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install Claude Code
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - name: Run planner and writer agents (backfill)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
+          DISABLE_AUTOUPDATER: '1'
+          MODE: backfill
+          BACKFILL_PATHS: ${{ inputs.paths }}
+          OUT_DIR: ${{ runner.temp }}/agent-output
+        run: bash .github/unit-test-agent/run-agents.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: unit-test-agent-output
+          path: ${{ runner.temp }}/agent-output
+          retention-days: 7
+
+  verify:
+    name: Verify
+    needs: agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      patch_empty: ${{ steps.patch.outputs.empty }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unit-test-agent-output
+          path: ${{ runner.temp }}/agent-output
+      - name: Is there a patch?
+        id: patch
+        run: |
+          if [ -s "$RUNNER_TEMP/agent-output/tests.patch" ]; then echo "empty=false" >> "$GITHUB_OUTPUT"; else echo "empty=true" >> "$GITHUB_OUTPUT"; fi
+          mkdir -p "$RUNNER_TEMP/verify"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.patch.outputs.empty == 'false'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install dependencies
+        if: steps.patch.outputs.empty == 'false'
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+      - name: Baseline
+        if: steps.patch.outputs.empty == 'false'
+        run: node .github/unit-test-agent/verify.mjs run before "$RUNNER_TEMP/verify"
+      - name: Guard and apply the agent's patch
+        id: guard
+        if: steps.patch.outputs.empty == 'false'
+        continue-on-error: true
+        run: node .github/unit-test-agent/apply-patch.mjs "$RUNNER_TEMP/agent-output/tests.patch" "$RUNNER_TEMP/verify/patch.json"
+      - name: Re-run with the agent's tests
+        if: steps.patch.outputs.empty == 'false' && steps.guard.outcome == 'success'
+        run: node .github/unit-test-agent/verify.mjs run after "$RUNNER_TEMP/verify"
+      - name: Verdict
+        if: steps.patch.outputs.empty == 'false'
+        run: node .github/unit-test-agent/verify.mjs verdict "$RUNNER_TEMP/verify"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.patch.outputs.empty == 'false'
+        with:
+          name: unit-test-agent-verify
+          path: ${{ runner.temp }}/verify
+          retention-days: 7
+
+  publish:
+    name: Open pull request
+    needs: [agent, verify]
+    if: always() && needs.agent.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: unit-test-agent-*
+          path: ${{ runner.temp }}/artifacts
+      - name: Render the report
+        env:
+          BACKFILL: '1'
+          GATE_TESTABLE: '1'
+          AGENT_RESULT: ${{ needs.agent.result }}
+          PATCH_EMPTY: ${{ needs.verify.outputs.patch_empty }}
+          PUSH_OUTCOME: ${{ needs.verify.result == 'success' && needs.verify.outputs.patch_empty == 'false' && 'pushed' || '' }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node .github/unit-test-agent/render-comment.mjs "$RUNNER_TEMP/artifacts" > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Push branch and open the pull request
+        if: needs.verify.result == 'success' && needs.verify.outputs.patch_empty == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCOPE: ${{ inputs.paths }}
+        run: |
+          set -euo pipefail
+          node .github/unit-test-agent/apply-patch.mjs "$RUNNER_TEMP/artifacts/unit-test-agent-output/tests.patch" > /dev/null
+          branch="unit-test-agent/backfill-${GITHUB_RUN_ID}"
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet \
+              -m 'test: backfill unit tests for untested units' \
+              -m "Unit-Test-Agent: verified in run ${GITHUB_RUN_ID}"
+          git push --quiet origin "HEAD:refs/heads/${branch}"
+          title='test: backfill unit tests for untested units'
+          [ -z "$SCOPE" ] || title="$title (${SCOPE})"
+          if ! gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/body.md"; then
+            echo "::warning::Could not open the pull request (enable 'Allow GitHub Actions to create and approve pull requests' in Settings → Actions). Branch ${branch} is pushed; open the PR manually."
+          fi

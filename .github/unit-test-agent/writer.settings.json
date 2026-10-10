@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Skill",
+      "Edit(frontend/src/**/*.test.ts)",
+      "Edit(frontend/src/**/*.test.tsx)",
+      "Edit(frontend/src/test/**)",
+      "Edit(backend/tests/**)",
+      "Edit(.unit-test-agent/**)",
+      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs --diff *)",
+      "Bash(bash .claude/skills/verify-tests/scripts/run-tests.sh *)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(.github/**)",
+      "Edit(.claude/**)",
+      "Edit(frontend/src/test/setup.ts)",
+      "Edit(**/package.json)",
+      "Edit(**/package-lock.json)",
+      "Edit(**/vitest.config.ts)",
+      "Edit(**/vite.config.ts)"
+    ]
+  }
+}

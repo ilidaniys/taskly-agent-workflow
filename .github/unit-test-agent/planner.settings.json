@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Skill",
+      "Edit(.unit-test-agent/**)",
+      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs)",
+      "Bash(node .claude/skills/analyze-pr-changes/scripts/changed-units.mjs *)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(frontend/**)",
+      "Edit(backend/**)",
+      "Edit(.github/**)",
+      "Edit(.claude/**)"
+    ]
+  }
+}
