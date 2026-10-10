@@ -5,7 +5,7 @@ name: Backfill unit tests
 # from scratch, and the result is opened as a pull request for human review. Same privilege
 # separation as the PR workflow; the agent job never holds a write token.
 #
-# Prerequisites: the ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) secret, and
+# Prerequisites: the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`; or ANTHROPIC_API_KEY), and
 # Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
 
 on:

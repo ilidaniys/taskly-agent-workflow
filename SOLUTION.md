@@ -77,8 +77,12 @@ judges it.
 
 ### Prerequisites
 
-1. Repository secret `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`). Use a
-   key from a dedicated workspace with a low spend limit.
+1. Repository secret `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` on a
+   machine logged into a Claude subscription and store the printed token
+   (Settings → Secrets and variables → Actions). An API key in
+   `ANTHROPIC_API_KEY` works as an alternative; then use a key from a dedicated
+   workspace with a low spend limit. The agent job accepts either and fails
+   with a clear message when neither is set.
 2. The pull request comes from a branch in this repository, is not a draft
    and does not carry the `skip-test-agent` label.
 
@@ -121,7 +125,7 @@ asks you to open the PR by hand).
 | Gate before any LLM call | Pull requests that touch no testable unit cost nothing (PR #1 itself is an example) |
 | Planner on `sonnet`, writer on `haiku` | The long, tool-heavy part of a run (writing files, running Vitest, reading failures, fixing) is on the cheapest model. The planner's read-only run is short |
 | Writer runs only when the plan has work | A diff the planner judges as `skip` for every unit stops after one short call |
-| `--max-budget-usd` per stage (`1` planner, `2.5` writer; higher for backfill) | Hard ceiling per run, independent of model behaviour |
+| `--max-budget-usd` per stage (`1` planner, `2.5` writer; higher for backfill) | Hard ceiling per run, independent of model behaviour. With a subscription token the dollar figure is Claude Code's estimate of the equivalent API cost, so the cap and the comment still show relative spend |
 | `cancel-in-progress` per pull request | A new push cancels the run for the superseded head |
 | Cost in the PR comment | Every run prints model, turns, duration and dollars per stage, so drift is visible where reviewers look |
 

@@ -9,7 +9,7 @@
 #       BASE_SHA             base commit (pr mode)
 #       PLANNER_BUDGET_USD   default 1
 #       WRITER_BUDGET_USD    default 2.5
-#       ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN
+#       CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY
 set -uo pipefail
 
 : "${OUT_DIR:?OUT_DIR is required}"
@@ -24,7 +24,7 @@ mkdir -p "$OUT_DIR" .unit-test-agent
 [ -n "${ANTHROPIC_API_KEY:-}" ] || unset ANTHROPIC_API_KEY
 [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || unset CLAUDE_CODE_OAUTH_TOKEN
 if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "::error::Set the ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) repository secret."
+  echo "::error::Set the CLAUDE_CODE_OAUTH_TOKEN (from \`claude setup-token\`) or ANTHROPIC_API_KEY repository secret."
   exit 1
 fi
 
