@@ -77,9 +77,11 @@ judges it.
 
 ### Prerequisites
 
-1. Repository secret `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` on a
-   machine logged into a Claude subscription and store the printed token
-   (Settings → Secrets and variables → Actions). An API key in
+1. Secret `CLAUDE_CODE_OAUTH_TOKEN` in the `prod` Environment (Settings →
+   Environments → prod): run `claude setup-token` on a machine logged into a
+   Claude subscription and store the printed token. Only the `agent` job
+   declares `environment: prod`, so only that job can read it; Environment
+   protection rules (required reviewers, branch restrictions) apply to it. An API key in
    `ANTHROPIC_API_KEY` works as an alternative; then use a key from a dedicated
    workspace with a low spend limit. The agent job accepts either and fails
    with a clear message when neither is set.
@@ -173,8 +175,9 @@ merge-base, not only the new commit. See "For production".
 
 - Run the agent as a GitHub App: its commits trigger CI, show a distinct
   identity and can be required to pass branch protection.
-- Keep the LLM credential in a protected Environment and protect `.github/`
-  and `.claude/` with CODEOWNERS, which closes the collaborator gap above.
+- Add protection rules to the `prod` Environment (restrict to protected
+  branches or require a reviewer) and protect `.github/` and `.claude/` with
+  CODEOWNERS, which closes the collaborator gap above.
 - Network egress allow-list for the agent job; run tests in a container
   without network.
 - Incremental runs: diff against the last head the agent processed instead
