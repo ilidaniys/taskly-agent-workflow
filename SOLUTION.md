@@ -157,15 +157,18 @@ covered.
 | Step | Outcome |
 |---|---|
 | Gate | 5 testable units; `types.ts` (both packages) excluded as types only |
-| Planner (`claude-sonnet-5-5`, 18 turns, 35 s, $0.18) | `update` for all five: validators (6 cases), router (6: filter forwarding, 422 on invalid values, no call to the repository), repository (6: `where` built per filter, omitted when empty, `completed=false` kept), `utils/todos.ts` (6, overdue / completed / no due date / future), `TodoFilters.tsx` (3) |
-| Writer (`claude-haiku-5-5`, 36 turns, 82 s, $0.02) | 5 test files updated, 39 tests added; one backend type error fixed on the second attempt; Prettier applied; both suites, both type checks and both coverage runs green inside the agent job |
+| Planner (`claude-sonnet-5-5`, 17 turns, 31 s, $0.15) | `update` for all five: validators, router (filter forwarding, 422 on invalid values, no call to the repository), repository (`where` built per filter, omitted when empty, `completed=false` kept), `utils/todos.ts` (overdue / completed / no due date / future), `TodoFilters.tsx` |
+| Writer (`claude-haiku-5-5`, 32 turns, 66 s, $0.02) | 5 test files updated, 24 tests added; one planned case dropped as impossible and explained in the notes; Prettier applied; both suites, both type checks and both coverage runs green inside the agent job |
 | Guard | 5 modified test files, no violations |
-| Verification | backend 48 → 73 tests, lines 35.65 → 42.60 %, branches 36.84 → 50.87 %; frontend 18 → 32 tests, lines 47.68 → 52.31 %, branches 43.88 → 55.39 %; type checks pass; `validators.ts` back at 100 % |
-| Result | `verified`; tests committed to the PR branch as `38ffe84`; one sticky comment with plan, report and the table above; total $0.20 |
+| Verification | backend 48 → 64 tests, branches 36.84 → 43.85 %; frontend 18 → 26 tests, lines 47.68 → 50.99 %, branches 43.88 → 53.23 %; type checks pass; `validators.ts` back at 100 % |
+| Result | `verified`; tests committed to the PR branch as `34aa556`; one sticky comment with plan, report and the table above; total $0.17 |
 
-The same PR was run three times while the pipeline was being fixed, which is
+The same PR was run four times while the pipeline was being fixed, which is
 how the sandbox placeholder problem (see Limitations) was found: the first
 two runs committed only the backend tests and the writer's notes said why.
+The two clean runs also show the run-to-run variance: the earlier one added
+39 tests (backend 73, frontend 32) for $0.20, the final one 24 tests for
+$0.17, both verified.
 
 ### Backfill — [PR #6](https://github.com/ilidaniys/taskly-agent-workflow/pull/6)
 
@@ -191,7 +194,7 @@ applies again; the guard and the verify job were never affected.
 
 | Run | Planner | Writer | Total |
 |---|---|---|---|
-| PR with 5 changed units (PR #3) | $0.13 – $0.18 | $0.02 | $0.15 – $0.20 |
+| PR with 5 changed units (PR #3, four runs) | $0.13 – $0.18 | $0.02 | $0.15 – $0.20 |
 | Backfill of a whole small monorepo (PR #6) | $0.43 | $0.36 | $0.80 |
 | PR with no testable change (PR #1, #4, #5) | — | — | $0 |
 
