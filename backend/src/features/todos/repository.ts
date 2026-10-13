@@ -1,11 +1,18 @@
 import { fromModel } from './mappers.js';
-import type { Database, TodoStore, TodoCreate, TodoUpdate, Todo } from './types.js';
+import type { Database, TodoStore, TodoCreate, TodoUpdate, Todo, TodoListFilter } from './types.js';
 
 export class TodoRepository implements TodoStore {
   constructor(private readonly database: Pick<Database, 'todo'>) {}
 
-  async list(): Promise<Todo[]> {
-    const rows = await this.database.todo.findMany({ orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+  async list(filter: TodoListFilter = {}): Promise<Todo[]> {
+    const where = {
+      ...(filter.priority !== undefined ? { priority: filter.priority } : {}),
+      ...(filter.completed !== undefined ? { completed: filter.completed } : {}),
+    };
+    const rows = await this.database.todo.findMany({
+      ...(Object.keys(where).length ? { where } : {}),
+      orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+    });
     return rows.map(fromModel);
   }
 

@@ -81,3 +81,30 @@ it('propagates database errors', async () => {
   vi.spyOn(database.todo, 'findMany').mockRejectedValue(new Error('Database unavailable'));
   await expect(repository.list()).rejects.toThrow('Database unavailable');
 });
+
+it('filters the list by priority', async () => {
+  const { database, repository } = setup();
+  const findMany = vi.spyOn(database.todo, 'findMany').mockResolvedValue([record]);
+  await repository.list({ priority: 'high' });
+  expect(findMany).toHaveBeenCalledWith({ where: { priority: 'high' }, orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+});
+it('keeps completed: false as a filter rather than treating it as absent', async () => {
+  const { database, repository } = setup();
+  const findMany = vi.spyOn(database.todo, 'findMany').mockResolvedValue([record]);
+  await repository.list({ completed: false });
+  expect(findMany).toHaveBeenCalledWith({ where: { completed: false }, orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+});
+it('combines priority and completed filters in where', async () => {
+  const { database, repository } = setup();
+  const findMany = vi.spyOn(database.todo, 'findMany').mockResolvedValue([record]);
+  await repository.list({ priority: 'low', completed: true });
+  expect(findMany).toHaveBeenCalledWith({ where: { priority: 'low', completed: true }, orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+});
+it('omits where for an empty filter', async () => {
+  const { database, repository } = setup();
+  const findMany = vi.spyOn(database.todo, 'findMany').mockResolvedValue([record]);
+  await repository.list({});
+  expect(findMany).toHaveBeenLastCalledWith({ orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+  await repository.list();
+  expect(findMany).toHaveBeenLastCalledWith({ orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+});
